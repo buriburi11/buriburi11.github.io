@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reliable file transfer over UDP · Ryan Thai</title>
+<meta name="description" content="TCP's reliability and congestion control rebuilt on top of UDP: a sliding window, an adaptive timer and fast retransmit, tested against a proxy that drops packets on purpose.">
+<meta name="theme-color" content="#f2f4f3">
+<link rel="preload" href="../assets/fonts/atkinson-hyperlegible-next-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="wrap">
+    <a class="site-name" href="../index.html">Ryan Thai</a>
+    <nav class="site-nav" aria-label="Main">
+      <ul><li><a href="../projects/rate-limited-gateway.html">Gateway</a></li><li><a href="../projects/reliable-udp-transfer.html" aria-current="page">UDP transport</a></li><li><a href="../projects/link-state-routing.html">Link-state routing</a></li><li><a href="https://github.com/buriburi11">GitHub</a></li><li><a href="mailto:rthai828@gmail.com">Email</a></li></ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+    <header class="case-head">
+      <p class="crumb"><a href="../index.html">Ryan Thai</a> / Case study</p>
+      <h1>Reliable file transfer over UDP</h1>
+      <p class="lede">TCP's reliability and congestion control rebuilt on top of UDP: a sliding window, an adaptive timer and fast retransmit, tested against a proxy that drops packets on purpose.</p>
+      <dl class="facts"><div><dt>Project</dt><dd>Computer networks course, Project 2</dd></div><div><dt>Language</dt><dd>Java 21, standard library only</dd></div><div><dt>My part</dt><dd>The sender's protocol logic: window, timer, congestion control, loss recovery</dd></div><div><dt>Code</dt><dd><a href="https://github.com/buriburi11/P2">GitHub repository</a></dd></div></dl>
+    </header>
+    <div class="case">
+      <nav class="toc" aria-labelledby="toc-h"><h2 id="toc-h">On this page</h2><ol><li><a href="#problem">The problem</a></li><li><a href="#boundary">What I built</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#verification">Verification</a></li><li><a href="#bug">Bugs I fixed</a></li><li><a href="#next">What's next</a></li></ol></nav>
+      <div class="case-body">
+
+<section id="problem" aria-labelledby="problem-h">
+  <h2 id="problem-h">The problem</h2>
+  <p>UDP delivers datagrams with no promises: they can be lost, delayed, duplicated or reordered. The job was to move a file across UDP byte-for-byte anyway, through a proxy that deliberately drops, delays, jitters, reorders and rate-limits traffic, and to do it efficiently rather than one packet at a time.</p>
+  <p>That means rebuilding the core of TCP: a sliding window so many segments are in flight, cumulative ACKs, a retransmission timer that adapts to measured round-trip time, congestion control so the sender backs off when the network is lossy, and fast retransmit so a single loss doesn't cost a full timeout.</p>
+</section>
+
+<section id="boundary" aria-labelledby="boundary-h">
+  <h2 id="boundary-h">What I built and what was provided</h2>
+  <p>This was Project 2 in a computer networks course. The instructor provided the proxy, the receiver, the test script, and the sender's startup, socket I/O and log formats. I implemented the sender's protocol logic:</p>
+  <div class="table-scroll"><table class="split">
+    <thead><tr><th scope="col">Method</th><th scope="col">Responsibility</th></tr></thead>
+    <tbody>
+      <tr><td>sendStep()</td><td>One tick of the send loop: fill the window, check the timer, run timeout recovery, pick the next poll delay</td></tr>
+      <tr><td>fillWindow()</td><td>Send while <code>nextSeq &lt; base + min(cwnd, maxWindow)</code>; start the timer when the flight goes from empty to non-empty</td></tr>
+      <tr><td>handleAck()</td><td>Classify each ACK as advancing, duplicate or stale</td></tr>
+      <tr><td>handleAdvancingAck()</td><td>Slide the window, take an RTT sample when Karn allows it, grow <code>cwnd</code>, restart or stop the timer</td></tr>
+      <tr><td>handleDuplicateAck()</td><td>Count duplicates; on the third, halve <code>ssthresh</code> and retransmit once per loss</td></tr>
+      <tr><td>handleTimeout()</td><td>Double the RTO, drop <code>cwnd</code> to 1, resend the whole flight</td></tr>
+      <tr><td>applyAckCredits()</td><td>Slow start below <code>ssthresh</code>, additive increase above it</td></tr>
+      <tr><td>updateRtt()</td><td>Jacobson/Karels smoothing and RTO clamping</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="architecture" aria-labelledby="architecture-h">
+  <h2 id="architecture-h">Architecture and tradeoffs</h2>
+  <p>Two threads share one lock. The main thread runs the send loop: fill the window, check the single DATA timer, then sleep 1–10 ms until the next deadline. A reader thread receives ACKs and updates the same state under that lock. Every field in the protocol state is guarded by it, so the sender's view of <code>base</code>, <code>nextSeq</code> and <code>cwnd</code> is always consistent.</p>
+  <h3>One timer, not one per segment</h3>
+  <p>Like TCP, there is a single retransmission timer for the oldest unacknowledged segment. It starts when the flight becomes non-empty, restarts whenever <code>base</code> advances, and stops when everything is acknowledged. On expiry the whole outstanding flight is resent. That's wasteful when only one segment was lost, but the receiver is Go-Back-N and would have discarded the later segments anyway.</p>
+  <h3>Adaptive timeout, with Karn's rule</h3>
+  <pre><code><span class="c">// first sample:   SRTT = R,  RTTVAR = R/2         (RFC 6298)</span>
+<span class="c">// later samples:  RTTVAR = (1-β)·RTTVAR + β·|SRTT - R|,  β = 1/4</span>
+<span class="c">//                 SRTT   = (1-α)·SRTT   + α·R,           α = 1/8</span>
+double calculatedRto = estimatedRttMs + 4 * deviationMs;
+rtoMs = Math.max(MIN_RTO_MS, Math.min(MAX_RTO_MS, calculatedRto));   <span class="c">// 100 ms … 60 s</span></code></pre>
+  <p>An ACK for a segment that was ever retransmitted produces no RTT sample, because there's no way to tell which copy it acknowledges. Sampling it could make the RTO collapse right when the network is struggling.</p>
+  <h3>Congestion control</h3>
+  <p><code>cwnd</code> starts at 1 and grows by one segment per ACKed segment in slow start, which doubles it every round trip. Above <code>ssthresh</code> it grows by one segment per full window. A timeout means heavy loss: <code>ssthresh</code> drops to half of <code>cwnd</code> and <code>cwnd</code> to 1. Three duplicate ACKs mean a single loss with data still flowing, so it's a milder cut: <code>cwnd</code> falls to the new <code>ssthresh</code>.</p>
+  <figure class="fig">
+    <svg class="ladder" viewBox="0 0 400 434" role="img" aria-labelledby="fig2b-t fig2b-d" xmlns="http://www.w3.org/2000/svg"><title id="fig2b-t">Figure 2: recovering one lost segment</title><desc id="fig2b-d">A sequence diagram with three lifelines: sender, proxy and receiver. DATA 4 is delivered and acknowledged. DATA 5 is dropped at the proxy. DATA 6, 7 and 8 arrive, and the receiver answers each with a duplicate ACK 4. On the third duplicate ACK the sender fast-retransmits DATA 5 and receives ACK 5. Because the receiver is Go-Back-N it had discarded segments 6 through 10, so they are resent after the retransmission timer expires.</desc><text class="lane" x="40" y="18" text-anchor="middle">sender</text><line class="life" x1="40" y1="26" x2="40" y2="428"/><text class="lane" x="200" y="18" text-anchor="middle">proxy</text><line class="life" x1="200" y1="26" x2="200" y2="428"/><text class="lane" x="360" y="18" text-anchor="middle">receiver</text><line class="life" x1="360" y1="26" x2="360" y2="428"/><g class="m " style="--i:0"><line x1="40" y1="52" x2="360.0" y2="78.0" pathLength="1"/><path class="head" d="M360.0 78.0L353.4 80.3L353.9 74.6Z"/><text x="120.0" y="52.5" text-anchor="middle">DATA 4</text></g><g class="m " style="--i:1"><line x1="360" y1="86" x2="40.0" y2="112.0" pathLength="1"/><path class="head" d="M40.0 112.0L46.1 108.6L46.6 114.3Z"/><text x="120.0" y="99.5" text-anchor="middle">ACK 4</text></g><g class="m lost" style="--i:2"><line x1="40" y1="128" x2="200.0" y2="141.0" pathLength="1"/><path class="x" d="M195.0 136.0l10 10M205.0 136.0l-10 10"/><text x="120.0" y="128.5" text-anchor="middle">DATA 5</text></g><g class="m n lossnote" style="--i:3"><text x="210" y="150" text-anchor="start">dropped</text></g><g class="m " style="--i:4"><line x1="40" y1="160" x2="360.0" y2="186.0" pathLength="1"/><path class="head" d="M360.0 186.0L353.4 188.3L353.9 182.6Z"/><text x="120.0" y="160.5" text-anchor="middle">DATA 6</text></g><g class="m " style="--i:4"><line x1="40" y1="176" x2="360.0" y2="202.0" pathLength="1"/><path class="head" d="M360.0 202.0L353.4 204.3L353.9 198.6Z"/></g><g class="m " style="--i:4"><line x1="40" y1="192" x2="360.0" y2="218.0" pathLength="1"/><path class="head" d="M360.0 218.0L353.4 220.3L353.9 214.6Z"/></g><g class="m dup" style="--i:5"><line x1="360" y1="224" x2="40.0" y2="250.0" pathLength="1"/><path class="head" d="M40.0 250.0L46.1 246.6L46.6 252.3Z"/></g><g class="m dup" style="--i:5"><line x1="360" y1="240" x2="40.0" y2="266.0" pathLength="1"/><path class="head" d="M40.0 266.0L46.1 262.6L46.6 268.3Z"/></g><g class="m dup" style="--i:5"><line x1="360" y1="256" x2="40.0" y2="282.0" pathLength="1"/><path class="head" d="M40.0 282.0L46.1 278.6L46.6 284.3Z"/><text x="161.6" y="288.1" text-anchor="middle">ACK 4  (dup ×3)</text></g><g class="m n callout" style="--i:6"><text x="48" y="300" text-anchor="start">3rd duplicate → fast retransmit</text></g><g class="m key" style="--i:7"><line x1="40" y1="314" x2="360.0" y2="340.0" pathLength="1"/><path class="head" d="M360.0 340.0L353.4 342.3L353.9 336.6Z"/><text x="120.0" y="314.5" text-anchor="middle">DATA 5</text></g><g class="m " style="--i:8"><line x1="360" y1="350" x2="40.0" y2="376.0" pathLength="1"/><path class="head" d="M40.0 376.0L46.1 372.6L46.6 378.3Z"/><text x="120.0" y="363.5" text-anchor="middle">ACK 5</text></g><g class="m n note" style="--i:9"><text x="48" y="404" text-anchor="start">6–10 were discarded (Go-Back-N)</text></g><g class="m n note" style="--i:10"><text x="48" y="420" text-anchor="start">→ RTO expires, resend 6–10</text></g></svg>
+    <figcaption><span class="fig-n">Figure 2.</span>Loss recovery as it happened in the trace below. Fast retransmit fills the hole in one round trip, and Go-Back-N's discards still cost one timeout.</figcaption>
+  </figure>
+</section>
+
+<section id="verification" aria-labelledby="verification-h">
+  <h2 id="verification-h">How I verified it</h2>
+  <p>The provided script starts a receiver and proxy, runs my sender, and compares the received file byte-for-byte with the original. I ran it clean, then with targeted faults. This is <code>long.bin</code> (48 segments) with 15 ms of delay and segment 5 dropped once:</p>
+  <pre><code>$ MAX_WINDOW=8 bash test-transfer.sh long.bin --delay-ms 15 --drop-data-once 5
+
+ACK ack=4 rtt=34.682
+CWND cwnd=6 ssthresh=64 phase=slow_start
+DUP_ACK ack=4 count=1
+DUP_ACK ack=4 count=2
+DUP_ACK ack=4 count=3
+<span class="hl">FAST_RETRANSMIT seq=5</span>
+CWND cwnd=3 ssthresh=3 phase=congestion_avoidance
+RESEND seq=5 reason=fast_retransmit
+ACK ack=5
+<span class="hl">TIMEOUT base=6 resending=5 rto_before=100.000 rto_after=200.000</span>
+RESEND seq=6 reason=timeout
+…
+STATS segments_sent=48 retransmissions=6 dup_acks=5 timeouts=1 final_cwnd=8 avg_rtt=33.631
+<span class="hl">PASS: received bytes match long.bin</span></code></pre>
+  <p>The trace shows each mechanism doing its job: slow start growing <code>cwnd</code> by one per ACK, the third duplicate triggering fast retransmit with the multiplicative decrease, and the RTO backing off from 100 to 200 ms on the timeout. It also shows the cost of a Go-Back-N receiver. Segments 6–10 had arrived but were thrown away, so they needed a second recovery.</p>
+</section>
+
+<section id="bug" aria-labelledby="bug-h">
+  <h2 id="bug-h">Bugs I fixed</h2>
+  <p>My first complete version passed a clean transfer, but two bugs showed up under loss. I went back and re-ran that earlier commit on the same test so the before-and-after here comes from real runs, not memory.</p>
+  <h3>Fast retransmit could never fire</h3>
+  <p>The guard that limits fast retransmit to once per loss was inverted:</p>
+  <pre><code><span class="c">- if (duplicateAckCount == 3 &amp;&amp; fastRetransmittedBase == base) {</span>
+<span class="hl">+ if (duplicateAckCount == 3 &amp;&amp; fastRetransmittedBase != base) {</span></code></pre>
+  <p><code>fastRetransmittedBase</code> starts at −1 and is reset to −1 whenever the window advances, so it never equals <code>base</code> and the branch never runs. Nothing crashes and the file still arrives, which is why it was easy to miss. Every loss just quietly waits for the full timeout. On the same test, the buggy version logs five duplicate ACKs, no fast retransmit, then:</p>
+  <pre><code>DUP_ACK ack=4 count=3
+DUP_ACK ack=4 count=4
+DUP_ACK ack=4 count=5
+TIMEOUT base=5 resending=6 rto_before=100.000 rto_after=200.000</code></pre>
+  <h3>The first RTT sample crashed the sender</h3>
+  <p>On the first sample, <code>updateRtt()</code> set the smoothed RTT but left <code>deviationMs</code>, a <code>Double</code>, as <code>null</code>. The next line, <code>estimatedRttMs + 4 * deviationMs</code>, unboxed that null and threw a <code>NullPointerException</code> inside the ACK-reader thread. The send loop saw the reader's failure and the transfer died on its first ACK with <code>Error: ACK reader failed</code>. The fix initializes <code>RTTVAR = R / 2</code>, which is what RFC 6298 specifies.</p>
+</section>
+
+<section id="next" aria-labelledby="next-h">
+  <h2 id="next-h">What I would improve next</h2>
+  <ul>
+    <li><strong>Selective acknowledgment.</strong> With a receiver that buffers out-of-order segments and reports SACK ranges, the loss above would cost exactly one retransmission instead of fast retransmit plus a timeout and five resends.</li>
+    <li><strong>Fast recovery (NewReno).</strong> Inflating <code>cwnd</code> on each additional duplicate ACK would let the sender keep new data flowing while it waits for the retransmission's ACK.</li>
+  </ul>
+  <p><a href="https://github.com/buriburi11/P2">Code and build instructions on GitHub →</a></p>
+</section>
+
+        <nav class="next-case" aria-label="More case studies"><a href="rate-limited-gateway.html">← Rate-limited model access gateway</a><a href="link-state-routing.html">Link-state routing control plane →</a></nav>
+      </div>
+    </div>
+  </div>
+</main>
+<footer class="site-foot" id="contact">
+  <div class="wrap">
+    <h2>Contact</h2>
+    <p>I'm looking for internships in networking, cloud and AI infrastructure for 2027.</p>
+    <ul class="contact" style="margin-top:0">
+      <li><a href="mailto:rthai828@gmail.com">rthai828@gmail.com</a></li>
+      <li><a href="https://github.com/buriburi11">github.com/buriburi11</a></li>
+      <li><a href="https://www.linkedin.com/in/ryan-thai-858119297/">linkedin.com/in/ryan-thai-858119297</a></li>
+    </ul>
+    <p>This site is hand-written HTML and CSS with no framework, served by GitHub Pages. <a href="https://github.com/buriburi11/buriburi11.github.io">Source</a>.</p>
+  </div>
+</footer>
+</body>
+</html>

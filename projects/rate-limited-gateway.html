@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rate-limited model access gateway · Ryan Thai</title>
+<meta name="description" content="A concurrent HTTP/1.1 gateway that decides who may call a language model, using three backend protocols I implemented by hand over raw sockets.">
+<meta name="theme-color" content="#f2f4f3">
+<link rel="preload" href="../assets/fonts/atkinson-hyperlegible-next-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="wrap">
+    <a class="site-name" href="../index.html">Ryan Thai</a>
+    <nav class="site-nav" aria-label="Main">
+      <ul><li><a href="../projects/rate-limited-gateway.html" aria-current="page">Gateway</a></li><li><a href="../projects/reliable-udp-transfer.html">UDP transport</a></li><li><a href="../projects/link-state-routing.html">Link-state routing</a></li><li><a href="https://github.com/buriburi11">GitHub</a></li><li><a href="mailto:rthai828@gmail.com">Email</a></li></ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+    <header class="case-head">
+      <p class="crumb"><a href="../index.html">Ryan Thai</a> / Case study</p>
+      <h1>Rate-limited model access gateway</h1>
+      <p class="lede">A concurrent HTTP/1.1 gateway that decides who may call a language model, using three backend protocols I implemented by hand over raw sockets.</p>
+      <dl class="facts"><div><dt>Project</dt><dd>Computer networks course, Project 1</dd></div><div><dt>Language</dt><dd>Java 21, standard library only</dd></div><div><dt>My part</dt><dd>7 methods: request parsing, 3 protocol clients, the concurrent pipeline</dd></div><div><dt>Code</dt><dd><a href="https://github.com/buriburi11/P1">GitHub repository</a></dd></div></dl>
+    </header>
+    <div class="case">
+      <nav class="toc" aria-labelledby="toc-h"><h2 id="toc-h">On this page</h2><ol><li><a href="#problem">The problem</a></li><li><a href="#boundary">What I built</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#verification">Verification</a></li><li><a href="#bug">Bugs I fixed</a></li><li><a href="#next">What's next</a></li></ol></nav>
+      <div class="case-body">
+
+<section id="problem" aria-labelledby="problem-h">
+  <h2 id="problem-h">The problem</h2>
+  <p>Model endpoints are expensive and shared, so something has to stand in front of them and decide who gets through. This gateway accepts plain-text chat requests over HTTP/1.1 and meters each caller against a per-minute limit: 3 requests for default callers, 10 for registered ones. Only approved requests are forwarded to the model.</p>
+  <p>What makes it non-trivial is that one request touches four different services, each with its own wire protocol, and the metering has to stay correct when many requests for the same caller arrive at the same instant.</p>
+  <ul>
+    <li><strong>Time</strong>, RFC 868: connect, read exactly 4 bytes, and decode them as an <em>unsigned</em> big-endian count of seconds since 1900.</li>
+    <li><strong>WHOIS</strong>: send <code>UserID\r\n</code>, read until the server closes, and find the <code>Tier:</code> field.</li>
+    <li><strong>Redis</strong>, RESP2: send <code>INCR usage:&lt;window&gt;:&lt;user&gt;</code> as a two-element array of bulk strings and parse the <code>:n</code> integer reply.</li>
+    <li><strong>The model</strong>: an OpenAI-compatible HTTP/JSON endpoint, here a local ELIZA stand-in.</li>
+  </ul>
+</section>
+
+<section id="boundary" aria-labelledby="boundary-h">
+  <h2 id="boundary-h">What I built and what was provided</h2>
+  <p>This was Project 1 in a computer networks course. The instructor supplied the backend services, the startup code and the model client. I wrote the seven methods that do the networking and the metering:</p>
+  <div class="table-scroll"><table class="split">
+    <thead><tr><th scope="col">Method</th><th scope="col">What I implemented</th></tr></thead>
+    <tbody>
+      <tr><td>serve()</td><td>The request pipeline: 404/405 routing, time lookup, key construction, concurrent WHOIS + Redis fan-out, cancellation and interrupt handling, the tier decision, the model call</td></tr>
+      <tr><td>readRequest()</td><td>HTTP/1.1 parsing: request line, case-insensitive headers with duplicates rejected, validation, and reading exactly <code>Content-Length</code> body bytes</td></tr>
+      <tr><td>readLine()</td><td>A CRLF line reader that rejects bare LF and enforces one 16 KiB budget across all header lines</td></tr>
+      <tr><td>currentWindow()</td><td>RFC 868 client and the window calculation</td></tr>
+      <tr><td>lookupTier()</td><td>WHOIS client with an 8 KiB response cap, handling unknown users and malformed records</td></tr>
+      <tr><td>increment()</td><td>RESP2 <code>INCR</code> encoding and integer-reply parsing</td></tr>
+      <tr><td>writeResponse()</td><td>Response framing with a byte-accurate UTF-8 <code>Content-Length</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>Provided by the instructor: <code>main()</code>, configuration parsing, the <code>FakeLLMClient</code> class, two small I/O helpers, the Time, WHOIS and Redis-compatible servers, and the packaged model.</p>
+</section>
+
+<section id="architecture" aria-labelledby="architecture-h">
+  <h2 id="architecture-h">Architecture and tradeoffs</h2>
+  <figure class="fig">
+    <svg class="ladder" viewBox="0 0 400 470" role="img" aria-labelledby="fig1b-t fig1b-d" xmlns="http://www.w3.org/2000/svg"><title id="fig1b-t">Figure 1: one request through the rate-limiting gateway, then a burst</title><desc id="fig1b-d">A sequence diagram with six lifelines: client, gateway, time, whois, redis and model. The client posts to /chat. The gateway reads a 4-byte timestamp from the Time server, then queries WHOIS and sends INCR to Redis in parallel. WHOIS answers REGISTERED and Redis answers 4. Since 4 is at most 10 the request is allowed, the gateway queries the model and returns 200 OK. Below, 20 concurrent requests from one default-tier caller arrive; 3 receive 200 OK and 17 receive 429 Too Many Requests.</desc><text class="lane" x="26" y="18" text-anchor="middle">client</text><line class="life" x1="26" y1="26" x2="26" y2="464"/><text class="lane" x="104" y="18" text-anchor="middle">gateway</text><line class="life" x1="104" y1="26" x2="104" y2="464"/><text class="lane" x="182" y="18" text-anchor="middle">time</text><line class="life" x1="182" y1="26" x2="182" y2="464"/><text class="lane" x="252" y="18" text-anchor="middle">whois</text><line class="life" x1="252" y1="26" x2="252" y2="464"/><text class="lane" x="318" y="18" text-anchor="middle">redis</text><line class="life" x1="318" y1="26" x2="318" y2="464"/><text class="lane" x="378" y="18" text-anchor="middle">model</text><line class="life" x1="378" y1="26" x2="378" y2="464"/><g class="m " style="--i:0"><line x1="26" y1="46" x2="104.0" y2="58.0" pathLength="1"/><path class="head" d="M104.0 58.0L97.2 59.8L98.1 54.2Z"/><text x="65.0" y="46.0" text-anchor="middle">POST /chat</text></g><g class="m " style="--i:1"><line x1="104" y1="70" x2="182.0" y2="78.0" pathLength="1"/><path class="head" d="M182.0 78.0L175.4 80.2L175.9 74.5Z"/><text x="143.0" y="68.0" text-anchor="middle">connect</text></g><g class="m " style="--i:2"><line x1="182" y1="90" x2="104.0" y2="98.0" pathLength="1"/><path class="head" d="M104.0 98.0L110.1 94.5L110.6 100.2Z"/><text x="143.0" y="88.0" text-anchor="middle">4 bytes</text></g><g class="m " style="--i:3"><line x1="104" y1="120" x2="252.0" y2="134.0" pathLength="1"/><path class="head" d="M252.0 134.0L245.4 136.2L245.9 130.6Z"/><text x="195.8" y="122.7" text-anchor="middle">alice\r\n</text></g><g class="m " style="--i:4"><line x1="104" y1="120" x2="318.0" y2="150.0" pathLength="1"/><path class="head" d="M318.0 150.0L311.3 151.9L312.1 146.3Z"/></g><g class="m n" style="--i:4"><text x="296" y="146" text-anchor="middle">INCR</text></g><g class="m n bracket" style="--i:4"><path d="M96 114v62"/><text x="90" y="142" text-anchor="end">in</text><text x="90" y="155" text-anchor="end">parallel</text></g><g class="m " style="--i:5"><line x1="252" y1="168" x2="104.0" y2="182.0" pathLength="1"/><path class="head" d="M104.0 182.0L110.1 178.6L110.6 184.2Z"/><text x="178.0" y="169.0" text-anchor="middle">REGISTERED</text></g><g class="m " style="--i:6"><line x1="318" y1="168" x2="104.0" y2="198.0" pathLength="1"/><path class="head" d="M104.0 198.0L109.9 194.3L110.7 199.9Z"/><text x="134.0" y="188.8" text-anchor="middle">:4</text></g><g class="m n decide" style="--i:7"><rect x="104" y="212" width="150" height="24" rx="2"/><text x="112" y="228">4 ≤ 10 → allow</text></g><g class="m " style="--i:8"><line x1="104" y1="256" x2="378.0" y2="266.0" pathLength="1"/><path class="head" d="M378.0 266.0L371.5 268.6L371.7 262.9Z"/><text x="241.0" y="255.0" text-anchor="middle">query</text></g><g class="m " style="--i:9"><line x1="378" y1="280" x2="104.0" y2="290.0" pathLength="1"/><path class="head" d="M104.0 290.0L110.3 286.9L110.5 292.6Z"/><text x="241.0" y="279.0" text-anchor="middle">reply</text></g><g class="m " style="--i:10"><line x1="104" y1="304" x2="26.0" y2="314.0" pathLength="1"/><path class="head" d="M26.0 314.0L32.0 310.4L32.7 316.0Z"/><text x="65.0" y="303.0" text-anchor="middle">200 OK</text></g><g class="m n" style="--i:11"><line class="sep" x1="8" y1="334" x2="392" y2="334"/></g><g class="m burst" style="--i:11"><line x1="26" y1="352.0" x2="104" y2="358.0"/><line x1="26" y1="354.4" x2="104" y2="360.4"/><line x1="26" y1="356.8" x2="104" y2="362.8"/><line x1="26" y1="359.2" x2="104" y2="365.2"/><line x1="26" y1="361.6" x2="104" y2="367.6"/><line x1="26" y1="364.0" x2="104" y2="370.0"/><line x1="26" y1="366.4" x2="104" y2="372.4"/><line x1="26" y1="368.8" x2="104" y2="374.8"/><line x1="26" y1="371.2" x2="104" y2="377.2"/><line x1="26" y1="373.6" x2="104" y2="379.6"/><line x1="26" y1="376.0" x2="104" y2="382.0"/><line x1="26" y1="378.4" x2="104" y2="384.4"/><line x1="26" y1="380.8" x2="104" y2="386.8"/><line x1="26" y1="383.2" x2="104" y2="389.2"/><line x1="26" y1="385.6" x2="104" y2="391.6"/><line x1="26" y1="388.0" x2="104" y2="394.0"/><line x1="26" y1="390.4" x2="104" y2="396.4"/><line x1="26" y1="392.8" x2="104" y2="398.8"/><line x1="26" y1="395.2" x2="104" y2="401.2"/><line x1="26" y1="397.6" x2="104" y2="403.6"/><text x="112" y="372">20 requests at once</text></g><g class="m burst" style="--i:12"><line class="ok" x1="104" y1="410" x2="26" y2="416"/><line class="ok" x1="104" y1="414" x2="26" y2="420"/><line class="ok" x1="104" y1="418" x2="26" y2="424"/><line class="no" x1="104" y1="424.0" x2="26" y2="430.0"/><line class="no" x1="104" y1="426.4" x2="26" y2="432.4"/><line class="no" x1="104" y1="428.8" x2="26" y2="434.8"/><line class="no" x1="104" y1="431.2" x2="26" y2="437.2"/><line class="no" x1="104" y1="433.6" x2="26" y2="439.6"/><line class="no" x1="104" y1="436.0" x2="26" y2="442.0"/><line class="no" x1="104" y1="438.4" x2="26" y2="444.4"/><line class="no" x1="104" y1="440.8" x2="26" y2="446.8"/><line class="no" x1="104" y1="443.2" x2="26" y2="449.2"/><line class="no" x1="104" y1="445.6" x2="26" y2="451.6"/><line class="no" x1="104" y1="448.0" x2="26" y2="454.0"/><line class="no" x1="104" y1="450.4" x2="26" y2="456.4"/><line class="no" x1="104" y1="452.8" x2="26" y2="458.8"/><line class="no" x1="104" y1="455.2" x2="26" y2="461.2"/><line class="no" x1="104" y1="457.6" x2="26" y2="463.6"/><line class="no" x1="104" y1="460.0" x2="26" y2="466.0"/><line class="no" x1="104" y1="462.4" x2="26" y2="468.4"/><text class="tag ok-t" x="112" y="420">3 × 200 OK</text><text class="tag no-t" x="112" y="452">17 × 429 Too Many Requests</text></g></svg>
+    <figcaption><span class="fig-n">Figure 1.</span>The order of operations for one allowed request, and the outcome of a 20-request burst from one default-tier caller.</figcaption>
+  </figure>
+  <h3>The order is forced by data dependencies</h3>
+  <p>The Redis key contains the time window, so the time lookup has to finish first. WHOIS and Redis don't depend on each other, so I submit both to a virtual-thread executor <em>before</em> waiting on either. Waiting on the first future before submitting the second would make the calls sequential and add a full backend round trip to every request. The model is only called after the decision, because protecting it is the reason the gateway exists.</p>
+  <pre><code><span class="c">// both tasks are in flight before either result is awaited</span>
+var tierFuture    = backends.submit(() -&gt; lookupTier(userID));
+var attemptFuture = backends.submit(() -&gt; increment(key));
+try {
+    tier    = tierFuture.get();
+    attempt = attemptFuture.get();
+} catch (ExecutionException e) {
+    tierFuture.cancel(true);  attemptFuture.cancel(true);
+    throw new IOException("Backend call failed", e.getCause());   <span class="c">// → 502</span>
+} catch (InterruptedException e) {
+    tierFuture.cancel(true);  attemptFuture.cancel(true);
+    Thread.currentThread().interrupt();                            <span class="c">// keep interrupt status</span>
+    throw new IOException("Backend call interrupted", e);
+}</code></pre>
+  <h3>Correctness comes from one atomic operation, not from locks</h3>
+  <p>The gateway keeps no counters. A read-then-write approach (<code>GET</code>, add one, <code>SET</code>) would let two racing requests both read 2, both write 3, and both be admitted. <code>INCR</code> changes the value and returns the new number as one atomic step, so every concurrent request gets its own attempt number and the comparison <code>attempt ≤ limit</code> needs no coordination. The tradeoff is that denied requests are still counted, and a request whose model call fails isn't refunded. The spec accepts both to keep the logic simple.</p>
+  <h3>Two parsing details that would be easy to get wrong</h3>
+  <ul>
+    <li><strong>Unsigned time.</strong> RFC 868 returns an unsigned 32-bit value, and Java's <code>getInt()</code> is signed. Today's timestamps are above 2<sup>31</sup>, so the raw <code>int</code> is negative. I convert it with <code>Integer.toUnsignedLong</code> before dividing by 60.</li>
+    <li><strong>Bytes, not characters.</strong> <code>Content-Length</code> counts bytes. The response length is taken from the UTF-8 byte array, not <code>String.length()</code>, and the request body is read with <code>readNBytes(contentLength)</code> because one <code>read()</code> on a TCP stream can return less.</li>
+  </ul>
+</section>
+
+<section id="verification" aria-labelledby="verification-h">
+  <h2 id="verification-h">How I verified it</h2>
+  <p>I ran the gateway against the provided services and tested each status path, the tier limits, and the concurrent case:</p>
+  <pre><code>default user, 5 sequential requests      200 200 200 <span class="hl">429 429</span>
+registered user, 12 requests             10 × 200, then <span class="hl">429</span>
+20 concurrent requests, one new user     <span class="hl">3 × 200, 17 × 429</span>
+GET /chat                                405, Allow: POST
+POST /other                              404
+HTTP/1.0 · bare LF · duplicate header ·
+short body · bad X-User-ID · JSON body   400
+Redis stopped mid-run                    502 A backend service failed.</code></pre>
+  <p>The burst is the important result. All 20 requests used a fresh user ID inside one window, and exactly 3 were admitted, the same as the sequential case. That confirms the limit holds under concurrency, not only when requests arrive one at a time.</p>
+  <pre><code>$ curl -i -X POST -H "X-User-ID: alice" -H "Content-Type: text/plain" \
+       --data "How are you today?" http://127.0.0.1:8080/chat
+HTTP/1.1 200 OK
+Content-Type: text/plain; charset=utf-8
+Content-Length: 42
+Connection: close
+
+What part of that stands out most to you?</code></pre>
+</section>
+
+<section id="bug" aria-labelledby="bug-h">
+  <h2 id="bug-h">Bugs I fixed</h2>
+  <p>My first committed draft had two bugs that only show up when you look at the actual bytes on the wire:</p>
+  <ul>
+    <li><strong>A client error was reported as a server failure.</strong> An invalid <code>X-User-ID</code> threw <code>UnsupportedOperationException</code>. <code>serve()</code> treats anything that isn't a <code>RequestException</code> as a backend failure, so a bad header came back as <em>502 Bad Gateway</em>, blaming the backends for the client's mistake. Throwing <code>RequestException</code> makes it a 400.</li>
+    <li><strong>Every response was followed by a second one.</strong> <code>writeResponse()</code> still ended with the starter's <code>throw</code> placeholder, <em>after</em> flushing. The catch block then wrote a 502 onto the same socket, so a client reading past the first response's <code>Content-Length</code> would find a second, contradictory response. Removing the leftover throw fixed it.</li>
+  </ul>
+</section>
+
+<section id="next" aria-labelledby="next-h">
+  <h2 id="next-h">What I would improve next</h2>
+  <ul>
+    <li><strong>Boundary bursts.</strong> With fixed windows, a caller can use its whole quota at 0:59 and again at 1:00. A sliding-window log or a token bucket would remove that double burst.</li>
+    <li><strong>Connection reuse.</strong> Each request opens three new TCP connections. Pooling the Redis and WHOIS connections would cut latency under load.</li>
+    <li><strong>Exact error text.</strong> My 404, 405 and 429 bodies differ slightly from the spec's wording, for example <code>Rate Limit Exceeded</code> where the spec has <code>Rate limit exceeded</code>. Status codes and headers match.</li>
+  </ul>
+  <p><a href="https://github.com/buriburi11/P1">Code and build instructions on GitHub →</a></p>
+</section>
+
+        <nav class="next-case" aria-label="More case studies"><span></span><a href="reliable-udp-transfer.html">Reliable file transfer over UDP →</a></nav>
+      </div>
+    </div>
+  </div>
+</main>
+<footer class="site-foot" id="contact">
+  <div class="wrap">
+    <h2>Contact</h2>
+    <p>I'm looking for internships in networking, cloud and AI infrastructure for 2027.</p>
+    <ul class="contact" style="margin-top:0">
+      <li><a href="mailto:rthai828@gmail.com">rthai828@gmail.com</a></li>
+      <li><a href="https://github.com/buriburi11">github.com/buriburi11</a></li>
+      <li><a href="https://www.linkedin.com/in/ryan-thai-858119297/">linkedin.com/in/ryan-thai-858119297</a></li>
+    </ul>
+    <p>This site is hand-written HTML and CSS with no framework, served by GitHub Pages. <a href="https://github.com/buriburi11/buriburi11.github.io">Source</a>.</p>
+  </div>
+</footer>
+</body>
+</html>

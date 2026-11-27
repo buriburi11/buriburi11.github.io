@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Link-state routing control plane · Ryan Thai</title>
+<meta name="description" content="A routing control plane that turns topology changes into complete forwarding tables for every router, published atomically so the network is never seen half-updated.">
+<meta name="theme-color" content="#f2f4f3">
+<link rel="preload" href="../assets/fonts/atkinson-hyperlegible-next-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="wrap">
+    <a class="site-name" href="../index.html">Ryan Thai</a>
+    <nav class="site-nav" aria-label="Main">
+      <ul><li><a href="../projects/rate-limited-gateway.html">Gateway</a></li><li><a href="../projects/reliable-udp-transfer.html">UDP transport</a></li><li><a href="../projects/link-state-routing.html" aria-current="page">Link-state routing</a></li><li><a href="https://github.com/buriburi11">GitHub</a></li><li><a href="mailto:rthai828@gmail.com">Email</a></li></ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+    <header class="case-head">
+      <p class="crumb"><a href="../index.html">Ryan Thai</a> / Case study</p>
+      <h1>Link-state routing control plane</h1>
+      <p class="lede">A routing control plane that turns topology changes into complete forwarding tables for every router, published atomically so the network is never seen half-updated.</p>
+      <dl class="facts"><div><dt>Project</dt><dd>Computer networks course, Project 3</dd></div><div><dt>Language</dt><dd>Java 21, standard library only</dd></div><div><dt>My part</dt><dd>Event handling, atomic publication, and first-hop table construction</dd></div><div><dt>Code</dt><dd><a href="https://github.com/buriburi11/P3">GitHub repository</a></dd></div></dl>
+    </header>
+    <div class="case">
+      <nav class="toc" aria-labelledby="toc-h"><h2 id="toc-h">On this page</h2><ol><li><a href="#problem">The problem</a></li><li><a href="#boundary">What I built</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#verification">Verification</a></li><li><a href="#edge">Edge cases</a></li><li><a href="#next">What's next</a></li></ol></nav>
+      <div class="case-body">
+
+<section id="problem" aria-labelledby="problem-h">
+  <h2 id="problem-h">The problem</h2>
+  <p>In a link-state network, every router needs a forwarding table: for each destination, which neighbor to hand the packet to next. When a link fails, the control plane has to recompute every router's table and install the new set without readers ever seeing a mix of old and new routes. A half-updated network is how routing loops and black holes happen.</p>
+  <p>This control plane accepts topology events (<code>INIT</code>, <code>LINK_DOWN</code>, <code>LINK_UP</code>) and read requests (<code>SNAPSHOT</code>, <code>QUERY</code>) as line-delimited JSON over TCP, for networks of up to 64 routers.</p>
+</section>
+
+<section id="boundary" aria-labelledby="boundary-h">
+  <h2 id="boundary-h">What I built and what was provided</h2>
+  <p>This was Project 3 in a computer networks course. The instructor provided the TCP server, the JSON codec, the topology graph, the Dijkstra solver with its equal-cost tie-break, the snapshot store, and the tests. I implemented the two pieces that make it a control plane:</p>
+  <div class="table-scroll"><table class="split">
+    <thead><tr><th scope="col">Code</th><th scope="col">Responsibility</th></tr></thead>
+    <tbody>
+      <tr><td>RoutingController.handle()</td><td>Event admission rules, applying the change, computing every router's table from one snapshot, the generation number, atomic publication, and the timing audit record</td></tr>
+      <tr><td>ForwardingTableBuilder.build()</td><td>Turning a shortest-path predecessor tree into first-hop entries for every known router, reachable or not</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="architecture" aria-labelledby="architecture-h">
+  <h2 id="architecture-h">Architecture and tradeoffs</h2>
+  <pre><code>event ─▶ handle()   <span class="c">synchronized: one event at a time, in arrival order</span>
+          1. validate   <span class="c">reject a second INIT, and link events before INIT</span>
+          2. apply      <span class="c">graph.initialize(...) / graph.change(...)</span>
+          3. snapshot   <span class="c">one immutable GraphSnapshot</span>
+          4. for each router r:
+               Dijkstra(snapshot, r) ─▶ build() ─▶ table[r]
+          5. publish    <span class="c">new ForwardingSnapshot(++generation, tables)</span>
+                        <span class="c">via a single AtomicReference.set</span>
+readers ─▶ SNAPSHOT / QUERY <span class="c">see generation n or n+1, never a mix</span></code></pre>
+  <h3>Compute from one snapshot, publish with one swap</h3>
+  <p>Every router's table in a generation is derived from the same immutable graph snapshot, so no generation mixes pre-failure and post-failure routes. The complete set of tables is built before anything is published, and publishing is a single reference swap. A concurrent <code>QUERY</code> reads whichever snapshot is current. It can see the old generation or the new one, but never a partial table. A rejected event throws before the generation changes, so the published state is untouched.</p>
+  <h3>Serialized events, lock-free reads</h3>
+  <p><code>handle()</code> is <code>synchronized</code>, so route computations never overlap and a slow computation can't publish late over a newer one. The tradeoff is that events queue behind each other. Readers don't take that lock at all; they read the atomic reference. That fits a control plane, where topology changes are rare and route lookups are constant.</p>
+  <h3>Building first hops from a predecessor tree</h3>
+  <p>Dijkstra returns, for each reachable router, its predecessor on the shortest path. The forwarding table needs the opposite end of the path: the first hop out of the source. For each destination, <code>build()</code> walks predecessors back until the next step would be the source:</p>
+  <pre><code>String hop = dest;
+while (!paths.predecessors().get(hop).equals(source)) {
+    hop = paths.predecessors().get(hop);
+}
+table.put(dest, new RouteEntry(hop, paths.distances().get(dest), true));</code></pre>
+  <p>The loop over destinations comes from the <em>topology's</em> router list, not the distance map. Dijkstra leaves unreachable routers out of its results, so building only from those keys would silently drop partitioned routers. Instead they get an explicit <code>reachable: false</code> entry.</p>
+  <figure class="fig">
+    <svg class="topo" viewBox="-6 -16 400 380" role="img" aria-labelledby="fig3b-t fig3b-d" xmlns="http://www.w3.org/2000/svg"><title id="fig3b-t">Figure 3: failover, then a partition</title><desc id="fig3b-d">Three snapshots of a four-router network with links A–B cost 1, B–C cost 2, A–C cost 5 and C–D cost 1. In generation 1 the route from A to D goes via B at cost 4. After the B–C link fails, generation 2 routes A to D via C at cost 6. After the A–C link also fails, generation 3 marks D unreachable from A.</desc><g class="m panel" style="--i:0" transform="translate(0,0)"><text class="ptitle" x="0" y="0">generation 1</text><line class="link on" x1="20" y1="70" x2="75" y2="22"/><text class="cost" x="48" y="40" text-anchor="middle">1</text><line class="link on" x1="75" y1="22" x2="130" y2="70"/><text class="cost" x="102" y="40" text-anchor="middle">2</text><line class="link" x1="20" y1="70" x2="130" y2="70"/><text class="cost" x="75" y="81" text-anchor="middle">5</text><line class="link on" x1="130" y1="70" x2="180" y2="70"/><text class="cost" x="155" y="64" text-anchor="middle">1</text><circle class="node end" cx="20" cy="70" r="9"/><text class="nl" x="20" y="74" text-anchor="middle">A</text><circle class="node" cx="75" cy="22" r="9"/><text class="nl" x="75" y="26" text-anchor="middle">B</text><circle class="node" cx="130" cy="70" r="9"/><text class="nl" x="130" y="74" text-anchor="middle">C</text><circle class="node end" cx="180" cy="70" r="9"/><text class="nl" x="180" y="74" text-anchor="middle">D</text><text class="res" x="210" y="74">A → D: via B, cost 4</text></g><g class="m panel" style="--i:1" transform="translate(0,128)"><text class="ptitle" x="0" y="0">generation 2: B–C down</text><line class="link" x1="20" y1="70" x2="75" y2="22"/><text class="cost" x="48" y="40" text-anchor="middle">1</text><line class="link down" x1="75" y1="22" x2="130" y2="70"/><text class="cost" x="102" y="40" text-anchor="middle">2</text><path class="x" d="M98 41l10 10M108 41l-10 10"/><line class="link on" x1="20" y1="70" x2="130" y2="70"/><text class="cost" x="75" y="81" text-anchor="middle">5</text><line class="link on" x1="130" y1="70" x2="180" y2="70"/><text class="cost" x="155" y="64" text-anchor="middle">1</text><circle class="node end" cx="20" cy="70" r="9"/><text class="nl" x="20" y="74" text-anchor="middle">A</text><circle class="node" cx="75" cy="22" r="9"/><text class="nl" x="75" y="26" text-anchor="middle">B</text><circle class="node" cx="130" cy="70" r="9"/><text class="nl" x="130" y="74" text-anchor="middle">C</text><circle class="node end" cx="180" cy="70" r="9"/><text class="nl" x="180" y="74" text-anchor="middle">D</text><text class="res" x="210" y="74">A → D: via C, cost 6</text></g><g class="m panel" style="--i:2" transform="translate(0,256)"><text class="ptitle" x="0" y="0">generation 3: A–C down</text><line class="link" x1="20" y1="70" x2="75" y2="22"/><text class="cost" x="48" y="40" text-anchor="middle">1</text><line class="link down" x1="75" y1="22" x2="130" y2="70"/><text class="cost" x="102" y="40" text-anchor="middle">2</text><path class="x" d="M98 41l10 10M108 41l-10 10"/><line class="link down" x1="20" y1="70" x2="130" y2="70"/><text class="cost" x="75" y="81" text-anchor="middle">5</text><path class="x" d="M70 65l10 10M80 65l-10 10"/><line class="link" x1="130" y1="70" x2="180" y2="70"/><text class="cost" x="155" y="64" text-anchor="middle">1</text><circle class="node end" cx="20" cy="70" r="9"/><text class="nl" x="20" y="74" text-anchor="middle">A</text><circle class="node" cx="75" cy="22" r="9"/><text class="nl" x="75" y="26" text-anchor="middle">B</text><circle class="node" cx="130" cy="70" r="9"/><text class="nl" x="130" y="74" text-anchor="middle">C</text><circle class="node end" cx="180" cy="70" r="9"/><text class="nl" x="180" y="74" text-anchor="middle">D</text><text class="res" x="210" y="74">A → D: unreachable</text></g></svg>
+    <figcaption><span class="fig-n">Figure 3.</span>The route from A to D in the wire session below: the cheapest path, failover to the expensive path, then a partition.</figcaption>
+  </figure>
+</section>
+
+<section id="verification" aria-labelledby="verification-h">
+  <h2 id="verification-h">How I verified it</h2>
+  <p>Unit tests for the table builder cover self routes, direct and multi-hop routes, unreachable destinations, equal-cost tie-breaks, large path costs, immutability, and rebuilding without stale entries:</p>
+  <pre><code>$ javac --release 21 -d out cpe.java ForwardingTests.java &amp;&amp; java -cp out ForwardingTests
+PASS  self route
+PASS  direct neighbor
+PASS  multi-hop route
+PASS  unreachable destination
+PASS  complete table
+PASS  selected equal-cost predecessor tree
+PASS  large path cost
+PASS  unmodifiable result
+PASS  rebuild without obsolete routes
+<span class="hl">9/9 cases passed</span></code></pre>
+  <p>The end-to-end simulator drives the running engine over TCP. It checks every router's table against its own shortest-path oracle after each event, through a failure, a partition, a recovery, a repeated <code>LINK_UP</code>, and rejected requests:</p>
+  <pre><code>$ python3 TopologySimulator.py --port 8080
+PASS  initial tables (generation 1)
+PASS  generation 2: R4-R5 down
+PASS  generation 3: R2-R3 down
+PASS  generation 4: R5-R4 up
+PASS  generation 5: R2-R3 up
+PASS  generation 6: R2-R3 up
+PASS  generation 7: R4-R5 up
+PASS  rejection preserves installed state
+<span class="hl">TCP baseline, failure, partition, recovery, rejection, and framing: PASS</span></code></pre>
+  <h3>A wire session: failover, then a partition</h3>
+  <p>I also drove the engine by hand on the four-router network in Figure 3. Responses are trimmed to the relevant fields:</p>
+  <pre><code>→ {"type":"INIT","nodes":["A","B","C","D"], …}
+← {"type":"ACK","generation":1,"elapsedNanos":9949928}
+→ {"type":"QUERY","queries":[{"from":"A","to":"D"}]}
+← {"nextHop":"B","cost":4,"reachable":true}
+
+→ {"type":"LINK_DOWN","a":"B","b":"C"}
+← {"type":"ACK","generation":2}
+→ {"type":"QUERY","queries":[{"from":"A","to":"D"}]}
+← {"nextHop":"C","cost":6,"reachable":true}        <span class="c">failover</span>
+
+→ {"type":"LINK_DOWN","a":"A","b":"C"}
+← {"type":"ACK","generation":3}
+→ {"type":"QUERY","queries":[{"from":"A","to":"D"}]}
+← {"nextHop":null,"cost":null,"reachable":false}   <span class="c">partitioned</span>
+
+→ {"type":"INIT", …}
+← <span class="hl">{"type":"ERROR","message":"Already Initialized"}</span>   <span class="c">generation stays 3</span></code></pre>
+</section>
+
+<section id="edge" aria-labelledby="edge-h">
+  <h2 id="edge-h">Edge cases I had to handle</h2>
+  <ul>
+    <li><strong>Partitioned routers.</strong> Covered above. Iterating the distance map would have produced tables with routers missing instead of marked unreachable. The simulator's partition step checks for exactly that.</li>
+    <li><strong>Repeated link states.</strong> A <code>LINK_UP</code> on a link that's already up still counts as an accepted event and must advance the generation (simulator generations 5 and 6), even though no route changes.</li>
+    <li><strong>Rejected events.</strong> Validation happens before any state changes, so a rejected event leaves both the published tables and the generation number exactly as they were.</li>
+  </ul>
+</section>
+
+<section id="next" aria-labelledby="next-h">
+  <h2 id="next-h">What I would improve next</h2>
+  <ul>
+    <li><strong>Incremental SPF.</strong> Every event reruns Dijkstra from every router, O(N · E log N). Recomputing only the trees that actually used the changed link would scale well past 64 routers.</li>
+    <li><strong>Accurate acceptance time.</strong> The audit record reads <code>acceptedNanos</code> after the graph change has been applied. Taking it at the top of <code>handle()</code> would measure admission latency precisely.</li>
+  </ul>
+  <p><a href="https://github.com/buriburi11/P3">Code and build instructions on GitHub →</a></p>
+</section>
+
+        <nav class="next-case" aria-label="More case studies"><a href="reliable-udp-transfer.html">← Reliable file transfer over UDP</a><span></span></nav>
+      </div>
+    </div>
+  </div>
+</main>
+<footer class="site-foot" id="contact">
+  <div class="wrap">
+    <h2>Contact</h2>
+    <p>I'm looking for internships in networking, cloud and AI infrastructure for 2027.</p>
+    <ul class="contact" style="margin-top:0">
+      <li><a href="mailto:rthai828@gmail.com">rthai828@gmail.com</a></li>
+      <li><a href="https://github.com/buriburi11">github.com/buriburi11</a></li>
+      <li><a href="https://www.linkedin.com/in/ryan-thai-858119297/">linkedin.com/in/ryan-thai-858119297</a></li>
+    </ul>
+    <p>This site is hand-written HTML and CSS with no framework, served by GitHub Pages. <a href="https://github.com/buriburi11/buriburi11.github.io">Source</a>.</p>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,1 +1,30 @@
 # buriburi11.github.io
+
+Source for Ryan Thai's engineering portfolio, live at **https://buriburi11.github.io/**.
+
+The site has three case studies of networking systems I built in Java: a rate-limited model access gateway, reliable file transfer over UDP, and a link-state routing control plane. Each one links to its own repository.
+
+## How it's built
+
+This is plain, hand-written HTML and CSS. It has no framework, no build step and no JavaScript dependencies; the only script is a few lines that replay the hero diagram's animation. GitHub Pages serves the `main` branch root directly.
+
+```text
+index.html                          landing page
+projects/rate-limited-gateway.html  case study: HTTP gateway + RFC 868 / WHOIS / Redis RESP2
+projects/reliable-udp-transfer.html case study: sliding window, congestion control, fast retransmit
+projects/link-state-routing.html    case study: Dijkstra → forwarding tables, atomic snapshots
+style.css                           all styles
+assets/fonts/                       Atkinson Hyperlegible Next and Mono (SIL Open Font License), self-hosted
+```
+
+The sequence diagrams are inline SVG. Their labels are real text, so they can be read by screen readers and crawlers and can be selected. Each figure also has a `<title>` and `<desc>` that describe it in words.
+
+## Run locally
+
+```bash
+python3 -m http.server 8000
+```
+
+Then open http://localhost:8000.
+
+`PRODUCT.md` and `.impeccable/` are design notes from the Impeccable design workflow I used to plan the site. They are not part of the site itself.
