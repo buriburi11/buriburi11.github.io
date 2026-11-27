@@ -32,5 +32,3 @@ python3 -m http.server 8000
 ```
 
 Then open http://localhost:8000.
-
-`PRODUCT.md` and `.impeccable/` are design notes from the Impeccable design workflow I used to plan the site. They are not part of the site itself.
