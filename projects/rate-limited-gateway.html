@@ -27,7 +27,7 @@
       <p class="crumb"><a href="../index.html">Ryan Thai</a> / Case study</p>
       <h1>Rate-limited model access gateway</h1>
       <p class="lede">A concurrent HTTP/1.1 gateway that decides who may call a language model, using the client side of three backend protocols, written by hand over raw sockets.</p>
-      <dl class="facts"><div><dt>Project</dt><dd>Computer networks course, Project 1</dd></div><div><dt>Language</dt><dd>Java 21, standard library only</dd></div><div><dt>My part</dt><dd>7 methods: request parsing, 3 protocol clients, the concurrent pipeline</dd></div><div><dt>Code</dt><dd><a href="https://github.com/buriburi11/P1">GitHub repository</a></dd></div></dl>
+      <dl class="facts"><div><dt>Project</dt><dd>Computer networks course, Project 1</dd></div><div><dt>Language</dt><dd>Java 21, standard library only</dd></div><div><dt>My part</dt><dd>7 methods: request parsing, 3 protocol clients, the concurrent pipeline</dd></div><div><dt>Code</dt><dd><a href="https://github.com/buriburi11/rate-limited-llm-gateway">GitHub repository</a></dd></div></dl>
     </header>
     <div class="case">
       <nav class="toc" aria-labelledby="toc-h"><h2 id="toc-h">On this page</h2><ol><li><a href="#problem">The problem</a></li><li><a href="#boundary">What I built</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#verification">Verification</a></li><li><a href="#bug">Bugs I fixed</a></li><li><a href="#next">What's next</a></li></ol></nav>
@@ -118,7 +118,7 @@ What part of that stands out most to you?</code></pre>
 
 <section id="bug" aria-labelledby="bug-h">
   <h2 id="bug-h">Bugs I fixed</h2>
-  <p>My first committed draft, <a href="https://github.com/buriburi11/P1/commit/f21646a"><code>f21646a</code></a>, had two bugs:</p>
+  <p>My first committed draft, <a href="https://github.com/buriburi11/rate-limited-llm-gateway/commit/f21646a"><code>f21646a</code></a>, had two bugs:</p>
   <ul>
     <li><strong>A client error was reported as a server failure.</strong> An invalid <code>X-User-ID</code> threw <code>UnsupportedOperationException</code>. <code>serve()</code> treats anything that isn't a <code>RequestException</code> as a backend failure, so a bad header came back as <em>502 Bad Gateway</em>. Throwing <code>RequestException</code> makes it a 400.</li>
     <li><strong>Every response was followed by a second one.</strong> <code>writeResponse()</code> still ended with the starter's <code>throw</code> placeholder, <em>after</em> flushing. The catch block then wrote a 502 onto the same socket, so a client reading past the first response's <code>Content-Length</code> would find a second, contradictory response. Removing the leftover throw fixed it.</li>
@@ -132,7 +132,7 @@ What part of that stands out most to you?</code></pre>
     <li><strong>Connection reuse.</strong> Each request opens three new TCP connections. Pooling the Redis and WHOIS connections would cut latency under load.</li>
     <li><strong>Exact error text.</strong> My 404, 405 and 429 bodies differ slightly from the spec's wording, for example <code>Rate Limit Exceeded</code> where the spec has <code>Rate limit exceeded</code>. Status codes and headers match.</li>
   </ul>
-  <p><a href="https://github.com/buriburi11/P1">Code and build instructions on GitHub →</a></p>
+  <p><a href="https://github.com/buriburi11/rate-limited-llm-gateway">Code and build instructions on GitHub →</a></p>
 </section>
 
         <nav class="next-case" aria-label="More case studies"><span></span><a href="reliable-udp-transfer.html">Reliable file transfer over UDP →</a></nav>

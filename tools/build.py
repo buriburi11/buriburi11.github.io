@@ -11,9 +11,9 @@ from ladder import all_figs  # noqa: E402
 SITE = HERE.parent
 FIGS = all_figs()
 REPO = {
-    "gateway": "https://github.com/buriburi11/P1",
-    "udp": "https://github.com/buriburi11/P2",
-    "routing": "https://github.com/buriburi11/P3",
+    "gateway": "https://github.com/buriburi11/rate-limited-llm-gateway",
+    "udp": "https://github.com/buriburi11/reliable-udp-transfer",
+    "routing": "https://github.com/buriburi11/link-state-routing-engine",
 }
 GH = "https://github.com/buriburi11"
 LI = "https://www.linkedin.com/in/ryan-thai-858119297/"
@@ -275,7 +275,7 @@ What part of that stands out most to you?</code></pre>
 
 <section id="bug" aria-labelledby="bug-h">
   <h2 id="bug-h">Bugs I fixed</h2>
-  <p>My first committed draft, <a href="https://github.com/buriburi11/P1/commit/f21646a"><code>f21646a</code></a>, had two bugs:</p>
+  <p>My first committed draft, <a href="https://github.com/buriburi11/rate-limited-llm-gateway/commit/f21646a"><code>f21646a</code></a>, had two bugs:</p>
   <ul>
     <li><strong>A client error was reported as a server failure.</strong> An invalid <code>X-User-ID</code> threw <code>UnsupportedOperationException</code>. <code>serve()</code> treats anything that isn't a <code>RequestException</code> as a backend failure, so a bad header came back as <em>502 Bad Gateway</em>. Throwing <code>RequestException</code> makes it a 400.</li>
     <li><strong>Every response was followed by a second one.</strong> <code>writeResponse()</code> still ended with the starter's <code>throw</code> placeholder, <em>after</em> flushing. The catch block then wrote a 502 onto the same socket, so a client reading past the first response's <code>Content-Length</code> would find a second, contradictory response. Removing the leftover throw fixed it.</li>
@@ -372,7 +372,7 @@ STATS segments_sent=48 retransmissions=6 dup_acks=5 timeouts=1 final_cwnd=8 avg_
 
 <section id="bug" aria-labelledby="bug-h">
   <h2 id="bug-h">Bugs I fixed</h2>
-  <p>My first complete implementation, commit <a href="https://github.com/buriburi11/P2/commit/e88e848"><code>e88e848</code></a>, had two bugs. Both were fixed in <a href="https://github.com/buriburi11/P2/commit/19170ca"><code>19170ca</code></a>. For this write-up I re-ran the earlier commit on the loss test above, to reproduce both.</p>
+  <p>My first complete implementation, commit <a href="https://github.com/buriburi11/reliable-udp-transfer/commit/e88e848"><code>e88e848</code></a>, had two bugs. Both were fixed in <a href="https://github.com/buriburi11/reliable-udp-transfer/commit/19170ca"><code>19170ca</code></a>. For this write-up I re-ran the earlier commit on the loss test above, to reproduce both.</p>
   <h3>Fast retransmit could never fire</h3>
   <p>The guard that limits fast retransmit to once per loss was inverted:</p>
   <pre><code><span class="c">- if (duplicateAckCount == 3 &amp;&amp; fastRetransmittedBase == base) {{</span>

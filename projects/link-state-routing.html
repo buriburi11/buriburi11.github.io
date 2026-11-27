@@ -27,7 +27,7 @@
       <p class="crumb"><a href="../index.html">Ryan Thai</a> / Case study</p>
       <h1>Link-state routing control plane</h1>
       <p class="lede">A routing control plane that turns topology changes into complete forwarding tables for every router, published atomically so the network is never seen half-updated.</p>
-      <dl class="facts"><div><dt>Project</dt><dd>Computer networks course, Project 3</dd></div><div><dt>Language</dt><dd>Java 21, standard library only</dd></div><div><dt>My part</dt><dd>Event handling, atomic publication, and first-hop table construction</dd></div><div><dt>Code</dt><dd><a href="https://github.com/buriburi11/P3">GitHub repository</a></dd></div></dl>
+      <dl class="facts"><div><dt>Project</dt><dd>Computer networks course, Project 3</dd></div><div><dt>Language</dt><dd>Java 21, standard library only</dd></div><div><dt>My part</dt><dd>Event handling, atomic publication, and first-hop table construction</dd></div><div><dt>Code</dt><dd><a href="https://github.com/buriburi11/link-state-routing-engine">GitHub repository</a></dd></div></dl>
     </header>
     <div class="case">
       <nav class="toc" aria-labelledby="toc-h"><h2 id="toc-h">On this page</h2><ol><li><a href="#problem">The problem</a></li><li><a href="#boundary">What I built</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#verification">Verification</a></li><li><a href="#edge">Edge cases</a></li><li><a href="#next">What's next</a></li></ol></nav>
@@ -141,7 +141,7 @@ PASS  rejection preserves installed state
     <li><strong>Incremental SPF.</strong> Every event reruns Dijkstra from every router, O(N · E log N). Recomputing only the trees that actually used the changed link would scale well past 64 routers.</li>
     <li><strong>Accurate acceptance time.</strong> The audit record reads <code>acceptedNanos</code> after the graph change has been applied. Taking it at the top of <code>handle()</code> would measure admission latency precisely.</li>
   </ul>
-  <p><a href="https://github.com/buriburi11/P3">Code and build instructions on GitHub →</a></p>
+  <p><a href="https://github.com/buriburi11/link-state-routing-engine">Code and build instructions on GitHub →</a></p>
 </section>
 
         <nav class="next-case" aria-label="More case studies"><a href="reliable-udp-transfer.html">← Reliable file transfer over UDP</a><span></span></nav>

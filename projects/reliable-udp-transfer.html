@@ -27,7 +27,7 @@
       <p class="crumb"><a href="../index.html">Ryan Thai</a> / Case study</p>
       <h1>Reliable file transfer over UDP</h1>
       <p class="lede">TCP's reliability and congestion control rebuilt on top of UDP: a sliding window, an adaptive timer and fast retransmit, tested against a proxy that drops packets on purpose.</p>
-      <dl class="facts"><div><dt>Project</dt><dd>Computer networks course, Project 2</dd></div><div><dt>Language</dt><dd>Java 21, standard library only</dd></div><div><dt>My part</dt><dd>The sender's protocol logic: window, timer, congestion control, loss recovery</dd></div><div><dt>Code</dt><dd><a href="https://github.com/buriburi11/P2">GitHub repository</a></dd></div></dl>
+      <dl class="facts"><div><dt>Project</dt><dd>Computer networks course, Project 2</dd></div><div><dt>Language</dt><dd>Java 21, standard library only</dd></div><div><dt>My part</dt><dd>The sender's protocol logic: window, timer, congestion control, loss recovery</dd></div><div><dt>Code</dt><dd><a href="https://github.com/buriburi11/reliable-udp-transfer">GitHub repository</a></dd></div></dl>
     </header>
     <div class="case">
       <nav class="toc" aria-labelledby="toc-h"><h2 id="toc-h">On this page</h2><ol><li><a href="#problem">The problem</a></li><li><a href="#boundary">What I built</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#verification">Verification</a></li><li><a href="#bug">Bugs I fixed</a></li><li><a href="#next">What's next</a></li></ol></nav>
@@ -101,7 +101,7 @@ STATS segments_sent=48 retransmissions=6 dup_acks=5 timeouts=1 final_cwnd=8 avg_
 
 <section id="bug" aria-labelledby="bug-h">
   <h2 id="bug-h">Bugs I fixed</h2>
-  <p>My first complete implementation, commit <a href="https://github.com/buriburi11/P2/commit/e88e848"><code>e88e848</code></a>, had two bugs. Both were fixed in <a href="https://github.com/buriburi11/P2/commit/19170ca"><code>19170ca</code></a>. For this write-up I re-ran the earlier commit on the loss test above, to reproduce both.</p>
+  <p>My first complete implementation, commit <a href="https://github.com/buriburi11/reliable-udp-transfer/commit/e88e848"><code>e88e848</code></a>, had two bugs. Both were fixed in <a href="https://github.com/buriburi11/reliable-udp-transfer/commit/19170ca"><code>19170ca</code></a>. For this write-up I re-ran the earlier commit on the loss test above, to reproduce both.</p>
   <h3>Fast retransmit could never fire</h3>
   <p>The guard that limits fast retransmit to once per loss was inverted:</p>
   <pre><code><span class="c">- if (duplicateAckCount == 3 &amp;&amp; fastRetransmittedBase == base) {</span>
@@ -121,7 +121,7 @@ TIMEOUT base=5 resending=6 rto_before=100.000 rto_after=200.000</code></pre>
     <li><strong>Selective acknowledgment.</strong> With a receiver that buffers out-of-order segments and reports SACK ranges, the loss above would cost exactly one retransmission instead of fast retransmit plus a timeout and five resends.</li>
     <li><strong>Fast recovery (NewReno).</strong> Inflating <code>cwnd</code> on each additional duplicate ACK would let the sender keep new data flowing while it waits for the retransmission's ACK.</li>
   </ul>
-  <p><a href="https://github.com/buriburi11/P2">Code and build instructions on GitHub →</a></p>
+  <p><a href="https://github.com/buriburi11/reliable-udp-transfer">Code and build instructions on GitHub →</a></p>
 </section>
 
         <nav class="next-case" aria-label="More case studies"><a href="rate-limited-gateway.html">← Rate-limited model access gateway</a><a href="link-state-routing.html">Link-state routing control plane →</a></nav>
