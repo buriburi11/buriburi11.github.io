@@ -87,7 +87,7 @@ index = head("Ryan Thai · Networking systems",
   <div class="wrap intro">
     <div>
       <h1>Ryan Thai</h1>
-      <p class="who">Computer science student at Sacramento State, graduating Spring 2027. I build networked systems and then try to break them.</p>
+      <p class="who">Computer science student at Sacramento State, graduating Spring 2027.</p>
       <p class="what">My focus is networking: protocols, transport and routing. I'm also working toward cloud and AI infrastructure. Below are three systems I built in Java, each written up with its architecture, how I tested it, and a bug I had to fix.</p>
       <p class="cta"><a class="go primary" href="projects/rate-limited-gateway.html">Read the gateway case study →</a></p>
       <ul class="contact" aria-label="Contact">
@@ -106,7 +106,7 @@ index = head("Ryan Thai · Networking systems",
 
   <section class="section" aria-labelledby="work">
     <div class="wrap">
-      <h2 id="work">Three systems, traced</h2>
+      <h2 id="work">Projects</h2>
       <p class="lede">Each one was a course project with an instructor-provided scaffold. The case studies spell out which parts I wrote.</p>
 
       <article class="project">
@@ -130,7 +130,7 @@ Redis stopped       502</code></pre>
         <div>
           <h3><a href="projects/reliable-udp-transfer.html">Reliable file transfer over UDP</a></h3>
           <p class="stack">Java 21 · sliding window · AIMD · Jacobson/Karels RTO · Karn's algorithm · fast retransmit</p>
-          <p>TCP's core ideas rebuilt on top of UDP. The sender pushes a file through a proxy that drops, delays and reorders packets, and has to get every byte across anyway. I wrote the sender's protocol logic: the window, the congestion window, the timer, and the loss recovery.</p>
+          <p>TCP's core ideas rebuilt on top of UDP. The sender pushes a file through a proxy that drops, delays and reorders packets, and still has to deliver every byte. I wrote the sender's protocol logic: the window, the congestion window, the timer, and the loss recovery.</p>
           <pre class="result"><code>DUP_ACK ack=4 count=3
 <b>FAST_RETRANSMIT seq=5</b>
 PASS: received bytes match long.bin</code></pre>
@@ -146,7 +146,7 @@ PASS: received bytes match long.bin</code></pre>
         <div>
           <h3><a href="projects/link-state-routing.html">Link-state routing control plane</a></h3>
           <p class="stack">Java 21 · Dijkstra · forwarding tables · atomic snapshots · JSON over TCP</p>
-          <p>A control plane for up to 64 routers. When a link goes down it recomputes shortest paths from every router and publishes complete forwarding tables as one generation-numbered snapshot, so a reader never sees half of a network change.</p>
+          <p>A control plane for up to 64 routers. When a link goes down it recomputes shortest paths from every router and publishes complete forwarding tables as one generation-numbered snapshot, so readers always see a complete set of tables.</p>
           <pre class="result"><code><b>9/9 cases passed</b>
 PASS  generation 7: R4-R5 up
 PASS  rejection preserves installed state</code></pre>
@@ -192,8 +192,8 @@ def case(slug, key, title, lede, facts, toc, body, prev, nxt):
 gw_body = f"""
 <section id="problem" aria-labelledby="problem-h">
   <h2 id="problem-h">The problem</h2>
-  <p>Model endpoints are expensive and shared, so something has to stand in front of them and decide who gets through. This gateway accepts plain-text chat requests over HTTP/1.1 and meters each caller against a per-minute limit: 3 requests for default callers, 10 for registered ones. Only approved requests are forwarded to the model.</p>
-  <p>What makes it non-trivial is that one request touches four different services, each with its own wire protocol, and the metering has to stay correct when many requests for the same caller arrive at the same instant.</p>
+  <p>Model endpoints are expensive and shared, so access to them needs to be limited. This gateway accepts plain-text chat requests over HTTP/1.1 and meters each caller against a per-minute limit: 3 requests for default callers, 10 for registered ones. Only approved requests are forwarded to the model.</p>
+  <p>The difficult part is that one request touches four different services, each with its own wire protocol, and the metering has to stay correct when many requests for the same caller arrive at the same instant.</p>
   <ul>
     <li><strong>Time</strong>, RFC 868: connect, read exactly 4 bytes, and decode them as an <em>unsigned</em> big-endian count of seconds since 1900.</li>
     <li><strong>WHOIS</strong>: send <code>UserID\\r\\n</code>, read until the server closes, and find the <code>Tier:</code> field.</li>
@@ -227,7 +227,7 @@ gw_body = f"""
     <figcaption><span class="fig-n">Figure 1.</span>The order of operations for one allowed request, and the outcome of a 20-request burst from one default-tier caller.</figcaption>
   </figure>
   <h3>The order is forced by data dependencies</h3>
-  <p>The Redis key contains the time window, so the time lookup has to finish first. WHOIS and Redis don't depend on each other, so I submit both to a virtual-thread executor <em>before</em> waiting on either. Waiting on the first future before submitting the second would make the calls sequential and add a full backend round trip to every request. The model is only called after the decision, because protecting it is the reason the gateway exists.</p>
+  <p>The Redis key contains the time window, so the time lookup has to finish first. WHOIS and Redis don't depend on each other, so I submit both to a virtual-thread executor <em>before</em> waiting on either. Waiting on the first future before submitting the second would make the calls sequential and add a full backend round trip to every request. The model is only called after the decision, because the gateway's purpose is to protect it.</p>
   <pre><code><span class="c">// both tasks are in flight before either result is awaited</span>
 var tierFuture    = backends.submit(() -&gt; lookupTier(userID));
 var attemptFuture = backends.submit(() -&gt; increment(key));
@@ -244,7 +244,7 @@ try {{
 }}</code></pre>
   <h3>Correctness comes from one atomic operation, not from locks</h3>
   <p>The gateway keeps no counters. A read-then-write approach (<code>GET</code>, add one, <code>SET</code>) would let two racing requests both read 2, both write 3, and both be admitted. <code>INCR</code> changes the value and returns the new number as one atomic step, so every concurrent request gets its own attempt number and the comparison <code>attempt ≤ limit</code> needs no coordination. The tradeoff is that denied requests are still counted, and a request whose model call fails isn't refunded. The spec accepts both to keep the logic simple.</p>
-  <h3>Two parsing details that would be easy to get wrong</h3>
+  <h3>Two parsing details</h3>
   <ul>
     <li><strong>Unsigned time.</strong> RFC 868 returns an unsigned 32-bit value, and Java's <code>getInt()</code> is signed. Today's timestamps are above 2<sup>31</sup>, so the raw <code>int</code> is negative. I convert it with <code>Integer.toUnsignedLong</code> before dividing by 60.</li>
     <li><strong>Bytes, not characters.</strong> <code>Content-Length</code> counts bytes. The response length is taken from the UTF-8 byte array, not <code>String.length()</code>, and the request body is read with <code>readNBytes(contentLength)</code> because one <code>read()</code> on a TCP stream can return less.</li>
@@ -262,7 +262,7 @@ POST /other                              404
 HTTP/1.0 · bare LF · duplicate header ·
 short body · bad X-User-ID · JSON body   400
 Redis stopped mid-run                    502 A backend service failed.</code></pre>
-  <p>The burst is the important result. All 20 requests used a fresh user ID inside one window, and exactly 3 were admitted, the same as the sequential case. That confirms the limit holds under concurrency, not only when requests arrive one at a time.</p>
+  <p>The concurrent test is the main result. All 20 requests used a fresh user ID inside one window, and exactly 3 were admitted, the same as the sequential case. That confirms the limit holds under concurrency, not only when requests arrive one at a time.</p>
   <pre><code>$ curl -i -X POST -H "X-User-ID: alice" -H "Content-Type: text/plain" \\
        --data "How are you today?" http://127.0.0.1:8080/chat
 HTTP/1.1 200 OK
@@ -275,9 +275,9 @@ What part of that stands out most to you?</code></pre>
 
 <section id="bug" aria-labelledby="bug-h">
   <h2 id="bug-h">Bugs I fixed</h2>
-  <p>My first committed draft, <a href="https://github.com/buriburi11/P1/commit/f21646a"><code>f21646a</code></a>, had two bugs that only show up when you look at the actual bytes on the wire:</p>
+  <p>My first committed draft, <a href="https://github.com/buriburi11/P1/commit/f21646a"><code>f21646a</code></a>, had two bugs:</p>
   <ul>
-    <li><strong>A client error was reported as a server failure.</strong> An invalid <code>X-User-ID</code> threw <code>UnsupportedOperationException</code>. <code>serve()</code> treats anything that isn't a <code>RequestException</code> as a backend failure, so a bad header came back as <em>502 Bad Gateway</em>, blaming the backends for the client's mistake. Throwing <code>RequestException</code> makes it a 400.</li>
+    <li><strong>A client error was reported as a server failure.</strong> An invalid <code>X-User-ID</code> threw <code>UnsupportedOperationException</code>. <code>serve()</code> treats anything that isn't a <code>RequestException</code> as a backend failure, so a bad header came back as <em>502 Bad Gateway</em>. Throwing <code>RequestException</code> makes it a 400.</li>
     <li><strong>Every response was followed by a second one.</strong> <code>writeResponse()</code> still ended with the starter's <code>throw</code> placeholder, <em>after</em> flushing. The catch block then wrote a 502 onto the same socket, so a client reading past the first response's <code>Content-Length</code> would find a second, contradictory response. Removing the leftover throw fixed it.</li>
   </ul>
 </section>
@@ -306,7 +306,7 @@ gateway = case("rate-limited-gateway", "gateway", "Rate-limited model access gat
 udp_body = f"""
 <section id="problem" aria-labelledby="problem-h">
   <h2 id="problem-h">The problem</h2>
-  <p>UDP delivers datagrams with no promises: they can be lost, delayed, duplicated or reordered. The job was to move a file across UDP byte-for-byte anyway, through a proxy that deliberately drops, delays, jitters, reorders and rate-limits traffic, and to do it efficiently rather than one packet at a time.</p>
+  <p>UDP doesn't guarantee delivery: they can be lost, delayed, duplicated or reordered. The job was to move a file across UDP byte-for-byte anyway, through a proxy that deliberately drops, delays, jitters, reorders and rate-limits traffic, and to do it efficiently rather than one packet at a time.</p>
   <p>That means rebuilding the core of TCP: a sliding window so many segments are in flight, cumulative ACKs, a retransmission timer that adapts to measured round-trip time, congestion control so the sender backs off when the network is lossy, and fast retransmit so a single loss doesn't cost a full timeout.</p>
 </section>
 
@@ -339,7 +339,7 @@ udp_body = f"""
 <span class="c">//                 SRTT   = (1-α)·SRTT   + α·R,           α = 1/8</span>
 double calculatedRto = estimatedRttMs + 4 * deviationMs;
 rtoMs = Math.max(MIN_RTO_MS, Math.min(MAX_RTO_MS, calculatedRto));   <span class="c">// 100 ms … 60 s</span></code></pre>
-  <p>An ACK for a segment that was ever retransmitted produces no RTT sample, because there's no way to tell which copy it acknowledges. Sampling it could make the RTO collapse right when the network is struggling.</p>
+  <p>An ACK for a segment that was ever retransmitted produces no RTT sample, because there's no way to tell which copy it acknowledges. Using that sample could shrink the RTO while the network is congested.</p>
   <h3>Congestion control</h3>
   <p><code>cwnd</code> starts at 1 and grows by one segment per ACKed segment in slow start, which doubles it every round trip. Above <code>ssthresh</code> it grows by one segment per full window. A timeout means heavy loss: <code>ssthresh</code> drops to half of <code>cwnd</code> and <code>cwnd</code> to 1. Three duplicate ACKs mean a single loss with data still flowing, so it's a milder cut: <code>cwnd</code> falls to the new <code>ssthresh</code>.</p>
   <figure class="fig">
@@ -367,17 +367,17 @@ RESEND seq=6 reason=timeout
 …
 STATS segments_sent=48 retransmissions=6 dup_acks=5 timeouts=1 final_cwnd=8 avg_rtt=33.631
 <span class="hl">PASS: received bytes match long.bin</span></code></pre>
-  <p>The trace shows each mechanism doing its job: slow start growing <code>cwnd</code> by one per ACK, the third duplicate triggering fast retransmit with the multiplicative decrease, and the RTO backing off from 100 to 200 ms on the timeout. It also shows the cost of a Go-Back-N receiver. Segments 6–10 had arrived but were thrown away, so they needed a second recovery.</p>
+  <p>The trace shows each mechanism: slow start growing <code>cwnd</code> by one per ACK, the third duplicate triggering fast retransmit with the multiplicative decrease, and the RTO backing off from 100 to 200 ms on the timeout. It also shows the cost of a Go-Back-N receiver. Segments 6–10 had arrived but were thrown away, so they needed a second recovery.</p>
 </section>
 
 <section id="bug" aria-labelledby="bug-h">
   <h2 id="bug-h">Bugs I fixed</h2>
-  <p>My first complete implementation, commit <a href="https://github.com/buriburi11/P2/commit/e88e848"><code>e88e848</code></a>, had two bugs. Both were fixed in <a href="https://github.com/buriburi11/P2/commit/19170ca"><code>19170ca</code></a>. For this write-up I re-ran the earlier commit on the loss test above, so the evidence below comes from real runs, not memory.</p>
+  <p>My first complete implementation, commit <a href="https://github.com/buriburi11/P2/commit/e88e848"><code>e88e848</code></a>, had two bugs. Both were fixed in <a href="https://github.com/buriburi11/P2/commit/19170ca"><code>19170ca</code></a>. For this write-up I re-ran the earlier commit on the loss test above, to reproduce both.</p>
   <h3>Fast retransmit could never fire</h3>
   <p>The guard that limits fast retransmit to once per loss was inverted:</p>
   <pre><code><span class="c">- if (duplicateAckCount == 3 &amp;&amp; fastRetransmittedBase == base) {{</span>
 <span class="hl">+ if (duplicateAckCount == 3 &amp;&amp; fastRetransmittedBase != base) {{</span></code></pre>
-  <p><code>fastRetransmittedBase</code> starts at −1 and is reset to −1 whenever the window advances, so it never equals <code>base</code> and the branch never runs. Nothing crashes and the file still arrives, which makes it easy to miss. Every loss just quietly waits for the full timeout. Because the second bug (below) crashes <code>e88e848</code> before any loss happens, I isolated this one by running <code>e88e848</code> with only the RTTVAR fix patched in. It logs five duplicate ACKs, no fast retransmit, and then:</p>
+  <p><code>fastRetransmittedBase</code> starts at −1 and is reset to −1 whenever the window advances, so it never equals <code>base</code> and the branch never runs. Nothing crashes and the file still arrives, so a clean test run doesn't reveal it. Every loss waits for the full timeout instead. Because the second bug (below) crashes <code>e88e848</code> before any loss happens, I isolated this one by running <code>e88e848</code> with only the RTTVAR fix patched in. It logs five duplicate ACKs, no fast retransmit, and then:</p>
   <pre><code>DUP_ACK ack=4 count=3
 DUP_ACK ack=4 count=4
 DUP_ACK ack=4 count=5
@@ -409,7 +409,7 @@ udp = case("reliable-udp-transfer", "udp", "Reliable file transfer over UDP",
 rt_body = f"""
 <section id="problem" aria-labelledby="problem-h">
   <h2 id="problem-h">The problem</h2>
-  <p>In a link-state network, every router needs a forwarding table: for each destination, which neighbor to hand the packet to next. When a link fails, the control plane has to recompute every router's table and install the new set without readers ever seeing a mix of old and new routes. A half-updated network is how routing loops and black holes happen.</p>
+  <p>In a link-state network, every router needs a forwarding table: for each destination, which neighbor to hand the packet to next. When a link fails, the control plane has to recompute every router's table and install the new set without readers ever seeing a mix of old and new routes. A partly updated set of tables can cause routing loops or dropped traffic.</p>
   <p>This control plane accepts topology events (<code>INIT</code>, <code>LINK_DOWN</code>, <code>LINK_UP</code>) and read requests (<code>SNAPSHOT</code>, <code>QUERY</code>) as line-delimited JSON over TCP, for networks of up to 64 routers.</p>
 </section>
 

@@ -25,7 +25,7 @@
   <div class="wrap intro">
     <div>
       <h1>Ryan Thai</h1>
-      <p class="who">Computer science student at Sacramento State, graduating Spring 2027. I build networked systems and then try to break them.</p>
+      <p class="who">Computer science student at Sacramento State, graduating Spring 2027.</p>
       <p class="what">My focus is networking: protocols, transport and routing. I'm also working toward cloud and AI infrastructure. Below are three systems I built in Java, each written up with its architecture, how I tested it, and a bug I had to fix.</p>
       <p class="cta"><a class="go primary" href="projects/rate-limited-gateway.html">Read the gateway case study →</a></p>
       <ul class="contact" aria-label="Contact">
@@ -44,7 +44,7 @@
 
   <section class="section" aria-labelledby="work">
     <div class="wrap">
-      <h2 id="work">Three systems, traced</h2>
+      <h2 id="work">Projects</h2>
       <p class="lede">Each one was a course project with an instructor-provided scaffold. The case studies spell out which parts I wrote.</p>
 
       <article class="project">
@@ -68,7 +68,7 @@ Redis stopped       502</code></pre>
         <div>
           <h3><a href="projects/reliable-udp-transfer.html">Reliable file transfer over UDP</a></h3>
           <p class="stack">Java 21 · sliding window · AIMD · Jacobson/Karels RTO · Karn's algorithm · fast retransmit</p>
-          <p>TCP's core ideas rebuilt on top of UDP. The sender pushes a file through a proxy that drops, delays and reorders packets, and has to get every byte across anyway. I wrote the sender's protocol logic: the window, the congestion window, the timer, and the loss recovery.</p>
+          <p>TCP's core ideas rebuilt on top of UDP. The sender pushes a file through a proxy that drops, delays and reorders packets, and still has to deliver every byte. I wrote the sender's protocol logic: the window, the congestion window, the timer, and the loss recovery.</p>
           <pre class="result"><code>DUP_ACK ack=4 count=3
 <b>FAST_RETRANSMIT seq=5</b>
 PASS: received bytes match long.bin</code></pre>
@@ -84,7 +84,7 @@ PASS: received bytes match long.bin</code></pre>
         <div>
           <h3><a href="projects/link-state-routing.html">Link-state routing control plane</a></h3>
           <p class="stack">Java 21 · Dijkstra · forwarding tables · atomic snapshots · JSON over TCP</p>
-          <p>A control plane for up to 64 routers. When a link goes down it recomputes shortest paths from every router and publishes complete forwarding tables as one generation-numbered snapshot, so a reader never sees half of a network change.</p>
+          <p>A control plane for up to 64 routers. When a link goes down it recomputes shortest paths from every router and publishes complete forwarding tables as one generation-numbered snapshot, so readers always see a complete set of tables.</p>
           <pre class="result"><code><b>9/9 cases passed</b>
 PASS  generation 7: R4-R5 up
 PASS  rejection preserves installed state</code></pre>

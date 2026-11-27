@@ -35,7 +35,7 @@
 
 <section id="problem" aria-labelledby="problem-h">
   <h2 id="problem-h">The problem</h2>
-  <p>In a link-state network, every router needs a forwarding table: for each destination, which neighbor to hand the packet to next. When a link fails, the control plane has to recompute every router's table and install the new set without readers ever seeing a mix of old and new routes. A half-updated network is how routing loops and black holes happen.</p>
+  <p>In a link-state network, every router needs a forwarding table: for each destination, which neighbor to hand the packet to next. When a link fails, the control plane has to recompute every router's table and install the new set without readers ever seeing a mix of old and new routes. A partly updated set of tables can cause routing loops or dropped traffic.</p>
   <p>This control plane accepts topology events (<code>INIT</code>, <code>LINK_DOWN</code>, <code>LINK_UP</code>) and read requests (<code>SNAPSHOT</code>, <code>QUERY</code>) as line-delimited JSON over TCP, for networks of up to 64 routers.</p>
 </section>
 

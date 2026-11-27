@@ -35,8 +35,8 @@
 
 <section id="problem" aria-labelledby="problem-h">
   <h2 id="problem-h">The problem</h2>
-  <p>Model endpoints are expensive and shared, so something has to stand in front of them and decide who gets through. This gateway accepts plain-text chat requests over HTTP/1.1 and meters each caller against a per-minute limit: 3 requests for default callers, 10 for registered ones. Only approved requests are forwarded to the model.</p>
-  <p>What makes it non-trivial is that one request touches four different services, each with its own wire protocol, and the metering has to stay correct when many requests for the same caller arrive at the same instant.</p>
+  <p>Model endpoints are expensive and shared, so access to them needs to be limited. This gateway accepts plain-text chat requests over HTTP/1.1 and meters each caller against a per-minute limit: 3 requests for default callers, 10 for registered ones. Only approved requests are forwarded to the model.</p>
+  <p>The difficult part is that one request touches four different services, each with its own wire protocol, and the metering has to stay correct when many requests for the same caller arrive at the same instant.</p>
   <ul>
     <li><strong>Time</strong>, RFC 868: connect, read exactly 4 bytes, and decode them as an <em>unsigned</em> big-endian count of seconds since 1900.</li>
     <li><strong>WHOIS</strong>: send <code>UserID\r\n</code>, read until the server closes, and find the <code>Tier:</code> field.</li>
@@ -70,7 +70,7 @@
     <figcaption><span class="fig-n">Figure 1.</span>The order of operations for one allowed request, and the outcome of a 20-request burst from one default-tier caller.</figcaption>
   </figure>
   <h3>The order is forced by data dependencies</h3>
-  <p>The Redis key contains the time window, so the time lookup has to finish first. WHOIS and Redis don't depend on each other, so I submit both to a virtual-thread executor <em>before</em> waiting on either. Waiting on the first future before submitting the second would make the calls sequential and add a full backend round trip to every request. The model is only called after the decision, because protecting it is the reason the gateway exists.</p>
+  <p>The Redis key contains the time window, so the time lookup has to finish first. WHOIS and Redis don't depend on each other, so I submit both to a virtual-thread executor <em>before</em> waiting on either. Waiting on the first future before submitting the second would make the calls sequential and add a full backend round trip to every request. The model is only called after the decision, because the gateway's purpose is to protect it.</p>
   <pre><code><span class="c">// both tasks are in flight before either result is awaited</span>
 var tierFuture    = backends.submit(() -&gt; lookupTier(userID));
 var attemptFuture = backends.submit(() -&gt; increment(key));
@@ -87,7 +87,7 @@ try {
 }</code></pre>
   <h3>Correctness comes from one atomic operation, not from locks</h3>
   <p>The gateway keeps no counters. A read-then-write approach (<code>GET</code>, add one, <code>SET</code>) would let two racing requests both read 2, both write 3, and both be admitted. <code>INCR</code> changes the value and returns the new number as one atomic step, so every concurrent request gets its own attempt number and the comparison <code>attempt ≤ limit</code> needs no coordination. The tradeoff is that denied requests are still counted, and a request whose model call fails isn't refunded. The spec accepts both to keep the logic simple.</p>
-  <h3>Two parsing details that would be easy to get wrong</h3>
+  <h3>Two parsing details</h3>
   <ul>
     <li><strong>Unsigned time.</strong> RFC 868 returns an unsigned 32-bit value, and Java's <code>getInt()</code> is signed. Today's timestamps are above 2<sup>31</sup>, so the raw <code>int</code> is negative. I convert it with <code>Integer.toUnsignedLong</code> before dividing by 60.</li>
     <li><strong>Bytes, not characters.</strong> <code>Content-Length</code> counts bytes. The response length is taken from the UTF-8 byte array, not <code>String.length()</code>, and the request body is read with <code>readNBytes(contentLength)</code> because one <code>read()</code> on a TCP stream can return less.</li>
@@ -105,7 +105,7 @@ POST /other                              404
 HTTP/1.0 · bare LF · duplicate header ·
 short body · bad X-User-ID · JSON body   400
 Redis stopped mid-run                    502 A backend service failed.</code></pre>
-  <p>The burst is the important result. All 20 requests used a fresh user ID inside one window, and exactly 3 were admitted, the same as the sequential case. That confirms the limit holds under concurrency, not only when requests arrive one at a time.</p>
+  <p>The concurrent test is the main result. All 20 requests used a fresh user ID inside one window, and exactly 3 were admitted, the same as the sequential case. That confirms the limit holds under concurrency, not only when requests arrive one at a time.</p>
   <pre><code>$ curl -i -X POST -H "X-User-ID: alice" -H "Content-Type: text/plain" \
        --data "How are you today?" http://127.0.0.1:8080/chat
 HTTP/1.1 200 OK
@@ -118,9 +118,9 @@ What part of that stands out most to you?</code></pre>
 
 <section id="bug" aria-labelledby="bug-h">
   <h2 id="bug-h">Bugs I fixed</h2>
-  <p>My first committed draft, <a href="https://github.com/buriburi11/P1/commit/f21646a"><code>f21646a</code></a>, had two bugs that only show up when you look at the actual bytes on the wire:</p>
+  <p>My first committed draft, <a href="https://github.com/buriburi11/P1/commit/f21646a"><code>f21646a</code></a>, had two bugs:</p>
   <ul>
-    <li><strong>A client error was reported as a server failure.</strong> An invalid <code>X-User-ID</code> threw <code>UnsupportedOperationException</code>. <code>serve()</code> treats anything that isn't a <code>RequestException</code> as a backend failure, so a bad header came back as <em>502 Bad Gateway</em>, blaming the backends for the client's mistake. Throwing <code>RequestException</code> makes it a 400.</li>
+    <li><strong>A client error was reported as a server failure.</strong> An invalid <code>X-User-ID</code> threw <code>UnsupportedOperationException</code>. <code>serve()</code> treats anything that isn't a <code>RequestException</code> as a backend failure, so a bad header came back as <em>502 Bad Gateway</em>. Throwing <code>RequestException</code> makes it a 400.</li>
     <li><strong>Every response was followed by a second one.</strong> <code>writeResponse()</code> still ended with the starter's <code>throw</code> placeholder, <em>after</em> flushing. The catch block then wrote a 502 onto the same socket, so a client reading past the first response's <code>Content-Length</code> would find a second, contradictory response. Removing the leftover throw fixed it.</li>
   </ul>
 </section>
